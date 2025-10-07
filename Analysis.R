@@ -238,4 +238,3 @@ ggplot(summary_used, aes(x = Weekday, y = UtilizationNormalized,fill = Weekday))
   theme(legend.position = "none") +    
   # theme_bw() +
   facet_grid(rows = vars(HOSPITAL))
-
