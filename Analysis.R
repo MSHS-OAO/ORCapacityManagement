@@ -27,6 +27,7 @@ library(readr)
 library(zip)
 library(here)
 library(hms)
+library(ggplot2)
 
 
 dsn <- "OAO Cloud DB Production"
@@ -215,12 +216,26 @@ summary_used <-  left_join(summary_used,
                            TotalAvailableTime) %>%
   mutate(UtilizationNormalized = ProcessTimeMin/as.numeric(TotalAvailableTimeMinutesAgg))%>%
   drop_na()
+summary_used$Weekday <- factor(summary_used$Weekday, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))
 
 summary_used_prime_non_prime <-  left_join(summary_used_prime_non_prime,
                            TotalAvailableTime) %>%
   mutate(UtilizationNormalized = ProcessTimeMin/as.numeric(TotalAvailableTimeMinutesAgg))%>%
   drop_na()
+summary_used_prime_non_prime$Weekday <- factor(summary_used_prime_non_prime$Weekday, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))
+
 
 
 write_xlsx(summary_used,"SummaryData.xlsx")
 write_xlsx(summary_used_prime_non_prime,"SummaryDataPrimeNonPrime.xlsx")
+
+
+
+ggplot(summary_used, aes(x = Weekday, y = UtilizationNormalized,fill = Weekday)) +
+  geom_boxplot() +
+  scale_fill_manual(values = rep('#221F72', each = 7)) +
+  labs(title = "Utilization by Days", y = "Utilization", x = "Weekday") + 
+  theme(legend.position = "none") +    
+  # theme_bw() +
+  facet_grid(rows = vars(HOSPITAL))
+
