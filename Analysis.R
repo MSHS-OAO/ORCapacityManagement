@@ -28,12 +28,14 @@ library(zip)
 library(here)
 library(hms)
 library(ggplot2)
+library(patchwork)
 
 
+# Establish DB Connection and Get data ----
 dsn <- "OAO Cloud DB Production"
 conn <- dbConnect(odbc(), dsn)
 source_table_name <- 'MS_INSIGHT.OR_QUALITY_DASHBOARD_CASE_DETAILS'
-sched_date <- '2025-01-01'
+sched_date <- '2024-09-01'
 status <- 'Completed'
 query <- glue("SELECT * 
               FROM {source_table_name} 
@@ -45,6 +47,7 @@ dbDisconnect(conn)
 # dbReadTable(conn, "MS_INSIGHT.OR_QUALITY_DASHBOARD_CASE_DETAILS")
 
 
+# Set the path to Shared Drive -----
 if ("Presidents" %in% list.files("/SharedDrive/")) {
   user_directory <- paste0("/SharedDrive/deans/Presidents/HSPI-PM/",
                            "Operations Analytics and Optimization/Projects/",
@@ -55,9 +58,11 @@ if ("Presidents" %in% list.files("/SharedDrive/")) {
                            "System Operations/OR Capacity Management/")
 }
 
+# MSHS Colors ----
 mshs_colors <- c("#221F72", "#00AEFF", "#D80B8C", "#7F7F7F")
 
 
+# Get the cascasde data  and processing ----
 ORSchedules <- read_xlsx(paste0(user_directory,"/SupplementData/ORSchedules.xlsx"),col_types = c("text","numeric","text", "text"))
 ORSchedules <- ORSchedules %>%
   mutate(TimeStartPSXCT = as.POSIXct(format(as.POSIXct(`Time Start`,format = "%I:%M:%S %p"),format="%H:%M:%S"),format="%H:%M:%S"),
@@ -66,9 +71,20 @@ ORSchedules <- ORSchedules %>%
          TotalAvailableTimeMinutes =TimeMinutes*`# ORs` ) %>%
   arrange(TimeStartPSXCT)
 
+ORSchedulesKeepAllOpenPrimeTime <- ORSchedules %>%
+  group_by(Location) %>%
+  mutate(`# ORs` = max(`# ORs`, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(TotalAvailableTimeMinutes =TimeMinutes*`# ORs` )
+
 ORAvailability <- ORSchedules %>%
   group_by(Location) %>%
   summarise(TotalAvailableTimeMinutesAgg = sum(TotalAvailableTimeMinutes))
+
+ORAvailabilityKeepAllOpenPrimeTime <- ORSchedulesKeepAllOpenPrimeTime %>%
+  group_by(Location) %>%
+  summarise(TotalAvailableTimeMinutesAggKeepAllOpenPrimeTime = sum(TotalAvailableTimeMinutes))
+
 
 # data_msh <- data %>%
 #   filter(Hospital == 'OR MSH')
@@ -78,6 +94,7 @@ ORAvailability <- ORSchedules %>%
 #          LOG_ID == 1445485)
 
 
+# Subset Necessary Columns ----
 schedule_data_needed_cols <- schedule_data %>%
   select(FACILITY,
          HOSPITAL,
@@ -113,7 +130,7 @@ schedule_data_needed_cols <- schedule_data %>%
          HOSP_ADMSN_TIME,
          HOSP_DISCH_TIME) 
 
-
+# Proprocess and create the necessary columns ----
 schedule_data_needed_cols <- schedule_data_needed_cols %>%
   mutate(ProcedureTimeMinutes = as.numeric(PATIENT_OUT_ROOM_DTTM - PATIENT_IN_ROOM_DTTM)/60,
          # ThreeHourBlockPart = as.numeric(ProcedureTimeMinutes)/180,
@@ -121,6 +138,8 @@ schedule_data_needed_cols <- schedule_data_needed_cols %>%
          `Available Start` = as.character(SURGERY_DATE),
          `Available End` = as.character(SURGERY_DATE),
          Weekday = weekdays(SURGERY_DATE),
+         DayofMonth = day(SURGERY_DATE),
+         WeekofYear = week(SURGERY_DATE),
          `Available Start` =  ifelse(str_detect(HOSPITAL, pattern = "MSH") & Weekday!='Wednesday',
                                             paste(as.character(SURGERY_DATE), '8:00:00'),
                                             ifelse(str_detect(HOSPITAL, pattern = "MSM") & Weekday=='Wednesday',
@@ -162,8 +181,8 @@ schedule_data_needed_cols <- schedule_data_needed_cols %>%
                                                                                              paste(as.character(SURGERY_DATE), '18:00:00'), NA)))))))),
          `Available Start` =  as.POSIXct(`Available Start`,format='%Y-%m-%d %H:%M:%S',tz = "America/New_York"),
          `Available End` = as.POSIXct(`Available End`,format='%Y-%m-%d %H:%M:%S',tz = "America/New_York"),
-         TotalAvailableTimeHoursPrimeTime = difftime(`Available End` , `Available Start` ,units = "hours"),
-         TotalAvailableTimeMinutesPrimeTime = difftime(`Available End` , `Available Start` ,units = "mins"),
+         # TotalAvailableTimeHoursPrimeTime = difftime(`Available End` , `Available Start` ,units = "hours"),
+         # TotalAvailableTimeMinutesPrimeTime = difftime(`Available End` , `Available Start` ,units = "mins"),
          PrimeTimeCase = ifelse(PATIENT_IN_ROOM_DTTM>=`Available Start` & PATIENT_OUT_ROOM_DTTM<=`Available End`,TRUE,FALSE)
          
   )
@@ -171,7 +190,9 @@ schedule_data_needed_cols <- schedule_data_needed_cols %>%
 schedule_data_needed_cols <- left_join(schedule_data_needed_cols,
                                        ORAvailability,
                                        by = c("HOSPITAL" = "Location"))
-
+schedule_data_needed_cols <- left_join(schedule_data_needed_cols,
+                                       ORAvailabilityKeepAllOpenPrimeTime,
+                                       by = c("HOSPITAL" = "Location"))
 
 # schedule_data_needed_cols <- schedule_data_needed_cols %>%
 #   mutate(ORScheduleTimeStart =   as.POSIXct(paste(as.character(SURGERY_DATE), `Time Start`),format = '%Y-%m-%d %I:%M:%S %p'),
@@ -182,59 +203,237 @@ TotalAvailableTime <- schedule_data_needed_cols %>%
   select(HOSPITAL,
          Weekday,
          SURGERY_DATE,
-         TotalAvailableTimeMinutesPrimeTime,
-         TotalAvailableTimeHoursPrimeTime,
+         # TotalAvailableTimeMinutesPrimeTime,
+         # TotalAvailableTimeHoursPrimeTime,
          `Available Start`,
          `Available End`,
-         TotalAvailableTimeMinutesAgg) %>% distinct()
+         TotalAvailableTimeMinutesAgg,
+         TotalAvailableTimeMinutesAggKeepAllOpenPrimeTime) %>% distinct()
 
+
+
+
+EffectivePrimeTimeMinutes <- schedule_data_needed_cols %>%
+  select(HOSPITAL,
+         Weekday,
+         `Available Start`,
+         `Available End`) %>% 
+  mutate(`Available Start` = format(`Available Start`, "%H:%M:%S"),
+         `Available End` = format(`Available End`, "%H:%M:%S"),
+         Weekday = factor(Weekday, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))) %>%
+  distinct()
+
+
+EffectivePrimeTimeMinutesKeepAllOpenPrimeTime <- left_join(EffectivePrimeTimeMinutes,
+                                       ORSchedulesKeepAllOpenPrimeTime %>%
+                                         select(Location,
+                                                `# ORs`,
+                                                `Time Start`,
+                                                `Time End`),
+                                       by =  c("HOSPITAL" = "Location")) %>%
+  mutate(`Time Start` = as.POSIXct(format(as.POSIXct(`Time Start`,format = "%I:%M:%S %p"),format="%H:%M:%S"),format="%H:%M:%S"),
+         `Time End` = as.POSIXct(format(as.POSIXct(`Time End`,format = "%I:%M:%S %p"),format="%H:%M:%S"),format="%H:%M:%S"),
+         `Available Start` = as.POSIXct(`Available Start`,format = "%H:%M:%S"),
+         `Available End` = as.POSIXct(`Available End`,format = "%H:%M:%S"),
+         PrimeTime = interval(`Available Start`, `Available End`),
+         Cascade = interval(`Time Start`, `Time End`),
+         overlap_interval = intersect(PrimeTime, Cascade),
+         overlap_duration_minutes = as.numeric(int_length(overlap_interval))/60,
+         overlap_duration_minutes = ifelse(is.na(overlap_duration_minutes),0,overlap_duration_minutes),
+         TotalAvailableTimeMinutesKeepAllOpenPrimeTime = overlap_duration_minutes*`# ORs` )
+
+EffectivePrimeTimeMinutes <- left_join(EffectivePrimeTimeMinutes,
+                                       ORSchedules %>%
+                                         select(Location,
+                                                `# ORs`,
+                                                `Time Start`,
+                                                `Time End`),
+                                       by =  c("HOSPITAL" = "Location")) %>%
+  mutate(`Time Start` = as.POSIXct(format(as.POSIXct(`Time Start`,format = "%I:%M:%S %p"),format="%H:%M:%S"),format="%H:%M:%S"),
+         `Time End` = as.POSIXct(format(as.POSIXct(`Time End`,format = "%I:%M:%S %p"),format="%H:%M:%S"),format="%H:%M:%S"),
+         `Available Start` = as.POSIXct(`Available Start`,format = "%H:%M:%S"),
+         `Available End` = as.POSIXct(`Available End`,format = "%H:%M:%S"),
+         PrimeTime = interval(`Available Start`, `Available End`),
+         Cascade = interval(`Time Start`, `Time End`),
+         overlap_interval = intersect(PrimeTime, Cascade),
+         overlap_duration_minutes = as.numeric(int_length(overlap_interval))/60,
+         overlap_duration_minutes = ifelse(is.na(overlap_duration_minutes),0,overlap_duration_minutes),
+         TotalAvailableTimeMinutesPrimeTimeCascadeOverlap = overlap_duration_minutes*`# ORs` )
+
+
+EffectivePrimeTimeMinutesV1 <- EffectivePrimeTimeMinutes %>%
+  select(HOSPITAL,
+         Weekday,
+         TotalAvailableTimeMinutesPrimeTimeCascadeOverlap) %>%
+  distinct() %>%
+  group_by(HOSPITAL,
+           Weekday) %>%
+  summarise(TotalAvailableTimeMinutesPrimeTimeCascadeOverlap = sum(TotalAvailableTimeMinutesPrimeTimeCascadeOverlap))
+
+EffectivePrimeTimeMinutesKeepAllOpenPrimeTimeV1 <- EffectivePrimeTimeMinutesKeepAllOpenPrimeTime %>%
+  select(HOSPITAL,
+         Weekday,
+         TotalAvailableTimeMinutesKeepAllOpenPrimeTime) %>%
+  distinct() %>%
+  group_by(HOSPITAL,
+           Weekday) %>%
+  summarise(TotalAvailableTimeMinutesKeepAllOpenPrimeTime = sum(TotalAvailableTimeMinutesKeepAllOpenPrimeTime))
 
 summary_used <- schedule_data_needed_cols %>%
   group_by(HOSPITAL,
            Weekday,
+           DayofMonth,
+           WeekofYear,
            SURGERY_DATE)%>%
-  summarise(ProcessTimeMin = sum(ProcedureTimeMinutes),
-            EarliestProcedureStart = min(PATIENT_IN_ROOM_DTTM),
-            EarliestProcedureEnd = min(PATIENT_OUT_ROOM_DTTM),
-            LatestProcedureStart = max(PATIENT_IN_ROOM_DTTM),
-            LatestProcedureEnd = max(PATIENT_OUT_ROOM_DTTM))
+  summarise(ProcessTimeMin = sum(ProcedureTimeMinutes))
 
-summary_used_prime_non_prime <- schedule_data_needed_cols %>%
+
+
+
+summary_used_prime_time <- schedule_data_needed_cols %>%
+  filter(PrimeTimeCase == TRUE) 
+summary_used_prime_time <- summary_used_prime_time %>%
   group_by(HOSPITAL,
            Weekday,
-           SURGERY_DATE,
-           PrimeTimeCase)%>%
-  summarise(ProcessTimeMin = sum(ProcedureTimeMinutes),
-            EarliestProcedureStart = min(PATIENT_IN_ROOM_DTTM),
-            EarliestProcedureEnd = min(PATIENT_OUT_ROOM_DTTM),
-            LatestProcedureStart = max(PATIENT_IN_ROOM_DTTM),
-            LatestProcedureEnd = max(PATIENT_OUT_ROOM_DTTM))
+           DayofMonth,
+           WeekofYear,
+           SURGERY_DATE)%>%
+  summarise(ProcessTimeMin = sum(ProcedureTimeMinutes))
 
 
  
 summary_used <-  left_join(summary_used,
                            TotalAvailableTime) %>%
-  mutate(UtilizationNormalized = ProcessTimeMin/as.numeric(TotalAvailableTimeMinutesAgg))%>%
-  drop_na()
-summary_used$Weekday <- factor(summary_used$Weekday, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))
+  mutate(UtilizationNormalized = ProcessTimeMin/as.numeric(TotalAvailableTimeMinutesAgg),
+         UtilizationNormalizedKeepAllOpenPrimeTime = ProcessTimeMin/as.numeric(TotalAvailableTimeMinutesAggKeepAllOpenPrimeTime))%>%
+  drop_na() %>%
+  mutate(Weekday = factor(Weekday, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")))
+  
 
-summary_used_prime_non_prime <-  left_join(summary_used_prime_non_prime,
-                           TotalAvailableTime) %>%
-  mutate(UtilizationNormalized = ProcessTimeMin/as.numeric(TotalAvailableTimeMinutesAgg))%>%
-  drop_na()
-summary_used_prime_non_prime$Weekday <- factor(summary_used_prime_non_prime$Weekday, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))
-
-
-
-write_xlsx(summary_used,"SummaryData.xlsx")
-write_xlsx(summary_used_prime_non_prime,"SummaryDataPrimeNonPrime.xlsx")
+# summary_used <-  left_join(summary_used_weekday,
+#             EffectivePrimeTimeMinutesV1) %>%
+#   mutate(UtilizationNormalizedPrimeTimeCascade = ProcessTimeMin/as.numeric(TotalAvailableTimeMinutesPrimeTimeCascadeOverlap))%>%
+#   drop_na() 
 
 
 
-ggplot(summary_used, aes(x = Weekday, y = UtilizationNormalized,fill = Weekday)) +
-  geom_boxplot() +
-  scale_fill_manual(values = rep('#221F72', each = 7)) +
-  labs(title = "Utilization by Days", y = "Utilization", x = "Weekday") + 
+summary_used_prime_time <-  left_join(summary_used_prime_time,
+                                           EffectivePrimeTimeMinutesV1) %>%
+  mutate(UtilizationNormalizedPrimeTimeCascade = ProcessTimeMin/as.numeric(TotalAvailableTimeMinutesPrimeTimeCascadeOverlap))%>%
+  drop_na() %>%
+  mutate(Weekday = factor(Weekday, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")))
+
+summary_used_prime_time <-  left_join(summary_used_prime_time,
+                                      EffectivePrimeTimeMinutesKeepAllOpenPrimeTimeV1) %>%
+  mutate(UtilizationNormalizedKeepAllOpenPrimeTime = ProcessTimeMin/as.numeric(TotalAvailableTimeMinutesKeepAllOpenPrimeTime))
+  
+plot_data <- summary_used_prime_time %>%
+  select(HOSPITAL,Weekday,SURGERY_DATE,UtilizationNormalizedPrimeTimeCascade,UtilizationNormalizedKeepAllOpenPrimeTime)
+
+plot_data <- pivot_longer(
+  plot_data,
+  cols = c(`UtilizationNormalizedPrimeTimeCascade`, `UtilizationNormalizedKeepAllOpenPrimeTime`),
+  names_to = "AllOpenvsCascade",
+  values_to = "Utilization"
+)
+
+plot_data <- plot_data %>%
+  mutate(AllOpenvsCascade = ifelse(str_detect(AllOpenvsCascade, pattern = "Open"),"No Cascade","Cascade"))
+
+# write_xlsx(summary_used,"SummaryData.xlsx")
+# write_xlsx(summary_used_prime_non_prime,"SummaryDataPrimeNonPrime.xlsx")
+# write_xlsx(EffectivePrimeTimeMinutes,"EffectivePrimeTimeMinutes.xlsx")
+
+
+
+ggplot(summary_used, aes(y = HOSPITAL, x = UtilizationNormalized,fill = HOSPITAL)) +
+  geom_boxplot(varwidth = TRUE,colour = "#221F72",outlier.alpha = 0.4,notch = TRUE) +
+  scale_fill_manual(values = rep('#00AEFF', each = 6)) +
+  labs(title = "Utilization by Days - 24 Hours", x = "Utilization") + 
   theme(legend.position = "none") +    
   # theme_bw() +
-  facet_grid(rows = vars(HOSPITAL))
+  theme(
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()
+  ) +
+  xlim(0, 0.8) +
+  facet_grid(rows = vars(Weekday)) 
+
+
+
+
+
+# ggplot(summary_used, aes(x = Weekday, y = UtilizationNormalizedPrimeTimeCascade,fill = Weekday)) +
+#   geom_boxplot() +
+#   scale_fill_manual(values = rep('#221F72', each = 7)) +
+#   labs(title = "Utilization by Days - PrimeTime and Cascades", y = "Utilization", x = "Weekday") + 
+#   theme(legend.position = "none") +    
+#   # theme_bw() +
+#   facet_grid(rows = vars(HOSPITAL))
+
+p1 <- ggplot(summary_used_prime_time, aes(y = HOSPITAL, x = UtilizationNormalizedPrimeTimeCascade,fill = HOSPITAL)) +
+  geom_boxplot(varwidth = TRUE,colour = "#221F72",outlier.alpha = 0.4,notch = TRUE) +
+  scale_fill_manual(values = rep('#00AEFF', each = 6)) +
+  labs(title = "Utilization during Prime Time with Cascades", x = "Utilization") + 
+  theme(legend.position = "none") +    
+  # theme_bw() +
+  theme(
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()
+  ) +
+  xlim(0, 0.7) +
+  facet_grid(rows = vars(Weekday))
+
+p2 <- ggplot(summary_used_prime_time, aes(y = HOSPITAL, x = UtilizationNormalizedKeepAllOpenPrimeTime,fill = HOSPITAL)) +
+  geom_boxplot(varwidth = TRUE,colour = "#221F72",outlier.alpha = 0.4,notch = TRUE) +
+  scale_fill_manual(values = rep('#00AEFF', each = 6)) +
+  labs(title = "Utilization during Prime Time without Cascades", x = "Utilization") + 
+  theme(legend.position = "none") +    
+  # theme_bw() +
+  theme(
+    plot.background = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank()
+  ) +
+  xlim(0, 0.7) +
+  facet_grid(rows = vars(Weekday)) 
+
+
+p1 + p2
+
+get_plot <- function(SITE){
+  plot_box <- ggplot(plot_data %>% filter(HOSPITAL == SITE), aes(y = AllOpenvsCascade, x = Utilization,fill = AllOpenvsCascade)) +
+    geom_boxplot(varwidth = TRUE,colour = "#221F72",outlier.alpha = 0.4,notch = TRUE) +
+    scale_fill_manual(values = rep('#00AEFF', each = 2)) +
+    labs(title =  SITE, x = "Prime Time Utilization") + 
+    theme(legend.position = "none") +    
+    # theme_bw() +
+    theme(
+      plot.background = element_blank(),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_blank(),
+      strip.text.y = element_text(
+        size = 9,
+        color = "#221F72"
+      )
+    ) +
+    xlim(0, 0.7) +
+    facet_grid(rows = vars(Weekday))
+}
+
+MSB <- get_plot("MSB")
+MSBI <- get_plot("MSBI")
+MSH <- get_plot("MSH")
+MSM <- get_plot("MSM")
+MSQ <- get_plot("MSQ")
+MSW <- get_plot("MSW")
+
+(MSB | MSBI | MSH) 
+
+(MSM | MSQ | MSW)
