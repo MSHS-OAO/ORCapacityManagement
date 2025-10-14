@@ -29,6 +29,8 @@ library(here)
 library(hms)
 library(ggplot2)
 library(patchwork)
+# library(ggh4x) # for x axis
+ 
 
 
 # Establish DB Connection and Get data ----
@@ -132,7 +134,7 @@ schedule_data_needed_cols <- schedule_data %>%
 
 # Proprocess and create the necessary columns ----
 schedule_data_needed_cols <- schedule_data_needed_cols %>%
-  mutate(ProcedureTimeMinutes = as.numeric(PATIENT_OUT_ROOM_DTTM - PATIENT_IN_ROOM_DTTM)/60,
+  mutate(ProcedureTimeMinutes = 45+as.numeric(PATIENT_OUT_ROOM_DTTM - PATIENT_IN_ROOM_DTTM)/60, # 45 minutes to accommodate for cleaning time
          # ThreeHourBlockPart = as.numeric(ProcedureTimeMinutes)/180,
          # Date = as.Date(SURGERY_DATE),
          `Available Start` = as.character(SURGERY_DATE),
@@ -410,7 +412,7 @@ get_plot <- function(SITE){
   plot_box <- ggplot(plot_data %>% filter(HOSPITAL == SITE), aes(y = AllOpenvsCascade, x = Utilization,fill = AllOpenvsCascade)) +
     geom_boxplot(varwidth = TRUE,colour = "#221F72",outlier.alpha = 0.4,notch = TRUE) +
     scale_fill_manual(values = rep('#00AEFF', each = 2)) +
-    labs(title =  SITE, x = "Prime Time Utilization") + 
+    labs(title =  SITE, x = "Prime Time Utilization (TAT Incl)") + 
     theme(legend.position = "none") +    
     # theme_bw() +
     theme(
@@ -419,12 +421,12 @@ get_plot <- function(SITE){
       panel.grid.minor = element_blank(),
       panel.border = element_blank(),
       strip.text.y = element_text(
-        size = 6,
+        size = 5,
         color = "#221F72"
       )
     ) +
     xlim(0, 0.6) +
-    facet_grid(rows = vars(Weekday)) +
+    facet_grid(rows = vars(Weekday),scales = "free") +
     geom_vline(xintercept = 0.4, linetype = "dashed", color = "red")
 }
 
@@ -435,7 +437,7 @@ MSM <- get_plot("MSM")
 MSQ <- get_plot("MSQ")
 MSW <- get_plot("MSW")
 
-ggsave("MSB_MSBI_MSH.pdf",(MSB | MSBI | MSH),width = 10)
+ 
+ggsave("MSB_MSBI_MSH_with_TAT.pdf",(MSB | MSBI | MSH))
 
-
-ggsave("MSM_MSQ_MSW.pdf",(MSM | MSQ | MSW),width = 10)
+ggsave("MSM_MSQ_MSW_with_TAT.pdf",(MSM | MSQ | MSW))
