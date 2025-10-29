@@ -42,7 +42,8 @@ status <- 'Completed'
 query <- glue("SELECT * 
               FROM {source_table_name} 
               WHERE SURGERY_DATE >=TO_DATE('{sched_date}','YYYY-MM-DD') AND 
-              CASE_STATUS = '{status}';") 
+              CASE_STATUS = '{status}' AND
+              FACILITY not like '%IR%' AND FACILITY not like '%L&D%';") 
 schedule_data <- dbGetQuery(conn, query)
 dbDisconnect(conn)
 
@@ -86,6 +87,13 @@ ORAvailability <- ORSchedules %>%
 ORAvailabilityKeepAllOpenPrimeTime <- ORSchedulesKeepAllOpenPrimeTime %>%
   group_by(Location) %>%
   summarise(TotalAvailableTimeMinutesAggKeepAllOpenPrimeTime = sum(TotalAvailableTimeMinutes))
+
+
+# TAT Data
+TAT <- read_xlsx(paste0(user_directory,"/SupplementData/ORSchedules.xlsx"), sheet = 'TAT_ORS',col_types = c("text","numeric"))
+
+# Number of Cases
+Cases <- read_xlsx(paste0(user_directory,"/SupplementData/ORSchedules.xlsx"), sheet = 'Cases',col_types = c("text","numeric"))
 
 
 # data_msh <- data %>%
@@ -132,9 +140,15 @@ schedule_data_needed_cols <- schedule_data %>%
          HOSP_ADMSN_TIME,
          HOSP_DISCH_TIME) 
 
+# Get number of cases ----
+cases_from_data <- schedule_data_needed_cols %>%
+  group_by(FACILITY)%>%
+  summarise(`# Cases` = n())
+
+
 # Proprocess and create the necessary columns ----
 schedule_data_needed_cols <- schedule_data_needed_cols %>%
-  mutate(ProcedureTimeMinutes = 45+as.numeric(PATIENT_OUT_ROOM_DTTM - PATIENT_IN_ROOM_DTTM)/60, # 45 minutes to accommodate for cleaning time
+  mutate(ProcedureTimeMinutes = as.numeric(PATIENT_OUT_ROOM_DTTM - PATIENT_IN_ROOM_DTTM)/60, # 45 minutes to accommodate for cleaning time
          # ThreeHourBlockPart = as.numeric(ProcedureTimeMinutes)/180,
          # Date = as.Date(SURGERY_DATE),
          `Available Start` = as.character(SURGERY_DATE),
@@ -189,6 +203,13 @@ schedule_data_needed_cols <- schedule_data_needed_cols %>%
          
   )
 
+schedule_data_needed_cols <- left_join(schedule_data_needed_cols,TAT,
+                                       by = c("FACILITY" = "OR_ID"))
+schedule_data_needed_cols <- schedule_data_needed_cols %>%
+  mutate(`Avg TAT` = if_else(is.na(`Avg TAT`),45,`Avg TAT`),
+         ProcedureTimeMinutes = ProcedureTimeMinutes+`Avg TAT`) %>%
+  select(-`Avg TAT`)
+
 schedule_data_needed_cols <- left_join(schedule_data_needed_cols,
                                        ORAvailability,
                                        by = c("HOSPITAL" = "Location"))
@@ -196,6 +217,18 @@ schedule_data_needed_cols <- left_join(schedule_data_needed_cols,
                                        ORAvailabilityKeepAllOpenPrimeTime,
                                        by = c("HOSPITAL" = "Location"))
 
+
+schedule_data_needed_cols_gaps <- schedule_data_needed_cols %>%
+  group_by(OR_ID, SURGERY_DATE) %>%
+  arrange(PATIENT_IN_ROOM_DTTM) %>%
+  mutate(`Previous Patient Out` = lag(PATIENT_OUT_ROOM_DTTM),
+         Gap = PATIENT_IN_ROOM_DTTM - `Previous Patient Out` )
+
+# schedule_data_needed_cols_gaps 
+
+# data <- schedule_data_needed_cols_gaps %>%
+#   select(OR_CASE_ID,OR_ID,FACILITY,PATIENT_IN_ROOM_DTTM,PATIENT_OUT_ROOM_DTTM, `Previous Patient Out`,Gap)
+#   
 # schedule_data_needed_cols <- schedule_data_needed_cols %>%
 #   mutate(ORScheduleTimeStart =   as.POSIXct(paste(as.character(SURGERY_DATE), `Time Start`),format = '%Y-%m-%d %I:%M:%S %p'),
 #          ORScheduleTimeEnd =  as.POSIXct(paste(as.character(SURGERY_DATE), `Time End`),format = '%Y-%m-%d %I:%M:%S %p')) 
@@ -340,7 +373,7 @@ plot_data <- pivot_longer(
 )
 
 plot_data <- plot_data %>%
-  mutate(AllOpenvsCascade = ifelse(str_detect(AllOpenvsCascade, pattern = "Open"),"No Cascade","Cascade"))
+  mutate(AllOpenvsCascade = ifelse(str_detect(AllOpenvsCascade, pattern = "Open"),"All Rooms Open","Cascade"))
 
 # write_xlsx(summary_used,"SummaryData.xlsx")
 # write_xlsx(summary_used_prime_non_prime,"SummaryDataPrimeNonPrime.xlsx")
@@ -412,7 +445,7 @@ get_plot <- function(SITE){
   plot_box <- ggplot(plot_data %>% filter(HOSPITAL == SITE), aes(y = AllOpenvsCascade, x = Utilization,fill = AllOpenvsCascade)) +
     geom_boxplot(varwidth = TRUE,colour = "#221F72",outlier.alpha = 0.4,notch = TRUE) +
     scale_fill_manual(values = rep('#00AEFF', each = 2)) +
-    labs(title =  SITE, x = "Prime Time Utilization (TAT Incl)") + 
+    labs(title =  SITE, x = "Prime Time Utilization (TAT Incl)",y = NULL) + 
     theme(legend.position = "none") +    
     # theme_bw() +
     theme(
@@ -438,6 +471,11 @@ MSQ <- get_plot("MSQ")
 MSW <- get_plot("MSW")
 
  
-ggsave("MSB_MSBI_MSH_with_TAT.pdf",(MSB | MSBI | MSH))
+ggsave("MSB_MSBI_with_TAT.png",MSB | MSBI)
+# ggsave("MSBI_with_TAT.pdf",MSBI)
+# ggsave("MSH_with_TAT.pdf",MSH)
+# ggsave("MSM_with_TAT.pdf",MSM)
+ggsave("MSH_MSM_with_TAT.png",MSH|MSM)
+ggsave("MSQ_MSW_with_TAT.png",MSQ | MSW)
 
-ggsave("MSM_MSQ_MSW_with_TAT.pdf",(MSM | MSQ | MSW))
+# ggsave("MSM_MSQ_MSW_with_TAT.pdf",(MSM | MSQ | MSW))
