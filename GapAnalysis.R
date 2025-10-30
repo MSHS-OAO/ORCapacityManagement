@@ -115,6 +115,9 @@ schedule_data_needed_cols <- schedule_data %>%
          SURGERY_DATE) 
 
 
+
+
+
 schedule_data_needed_cols <- left_join(schedule_data_needed_cols,ClusterInfo,
                                        by = c("OR_CASE_ID" = "OR Case ID"))
 
@@ -126,7 +129,64 @@ schedule_data_needed_cols <- left_join(schedule_data_needed_cols,TAT_Hospital,
 schedule_data_needed_cols <-  schedule_data_needed_cols %>%
   mutate(`Avg TAT` = if_else(is.na(`Average of TAT Cluster`),`Average of TAT Location`,`Average of TAT Cluster`))
 
+# function to derive Prime Time for Location ----
 
+prime_time_location <- function(data){
+  # Assumes the data here is from DB Table
+  data <- data %>% mutate(
+    Weekday = weekdays(SURGERY_DATE),
+    `Available Start` = as.character(SURGERY_DATE),
+    `Available End` = as.character(SURGERY_DATE),
+    `Available Start` =  ifelse(str_detect(HOSPITAL, pattern = "MSH") & Weekday!='Wednesday',
+                                paste(as.character(SURGERY_DATE), '8:00:00'),
+                                ifelse(str_detect(HOSPITAL, pattern = "MSM") & Weekday=='Wednesday',
+                                       paste(as.character(SURGERY_DATE), '7:30:00'),
+                                       ifelse(str_detect(HOSPITAL, pattern = "MSM") & Weekday!='Wednesday',
+                                              paste(as.character(SURGERY_DATE), '8:30:00'), 
+                                              ifelse((str_detect(HOSPITAL, pattern = "MSDC") | str_detect(HOSPITAL, pattern = "MSDUS") |  str_detect(HOSPITAL, pattern = "MSW")) & Weekday=='Wednesday',
+                                                     paste(as.character(SURGERY_DATE), '8:30:00'),
+                                                     ifelse((str_detect(HOSPITAL, pattern = "MSDC") | str_detect(HOSPITAL, pattern = "MSDUS") |  str_detect(HOSPITAL, pattern = "MSW")) & Weekday!='Wednesday',
+                                                            paste(as.character(SURGERY_DATE), '7:30:00'),
+                                                            ifelse(str_detect(HOSPITAL, pattern = "MSQ"),
+                                                                   paste(as.character(SURGERY_DATE), '8:00:00'),
+                                                                   ifelse(str_detect(HOSPITAL, pattern = "MSB"),
+                                                                          paste(as.character(SURGERY_DATE), '8:00:00'),
+                                                                          ifelse(str_detect(HOSPITAL, pattern = "MSH") & Weekday=='Wednesday',
+                                                                                 paste(as.character(SURGERY_DATE), '9:00:00'),NA)
+                                                                   )
+                                                            )
+                                                     )
+                                              )
+                                       )
+                                )
+    ),
+    `Available End` = ifelse(str_detect(HOSPITAL, pattern = "MSH") & Weekday!='Wednesday',
+                             paste(as.character(SURGERY_DATE), '18:00:00'),
+                             ifelse(str_detect(HOSPITAL, pattern = "MSM") & Weekday=='Wednesday',
+                                    paste(as.character(SURGERY_DATE), '17:30:00'),
+                                    ifelse(str_detect(HOSPITAL, pattern = "MSM") & Weekday!='Wednesday',
+                                           paste(as.character(SURGERY_DATE), '17:30:00'), 
+                                           ifelse((str_detect(HOSPITAL, pattern = "MSDC") | str_detect(HOSPITAL, pattern = "MSDUS") |  str_detect(HOSPITAL, pattern = "MSW")) & Weekday=='Wednesday',
+                                                  paste(as.character(SURGERY_DATE), '17:30:00'),
+                                                  ifelse((str_detect(HOSPITAL, pattern = "MSDC") | str_detect(HOSPITAL, pattern = "MSDUS") |  str_detect(HOSPITAL, pattern = "MSW")) & Weekday!='Wednesday',
+                                                         paste(as.character(SURGERY_DATE), '17:30:00'), 
+                                                         ifelse(str_detect(HOSPITAL, pattern = "MSQ"),
+                                                                paste(as.character(SURGERY_DATE), '18:00:00'), 
+                                                                ifelse(str_detect(HOSPITAL, pattern = "MSB"),
+                                                                       paste(as.character(SURGERY_DATE), '15:00:00'),
+                                                                       ifelse(str_detect(HOSPITAL, pattern = "MSH") & Weekday=='Wednesday',
+                                                                              paste(as.character(SURGERY_DATE), '18:00:00'), NA)))))))),
+    `Available Start` =  as.POSIXct(`Available Start`,format='%Y-%m-%d %H:%M:%S',tz = "America/New_York"),
+    `Available End` = as.POSIXct(`Available End`,format='%Y-%m-%d %H:%M:%S',tz = "America/New_York"),
+    
+  )
+  
+  
+  
+  
+}
+
+schedule_data_needed_cols <- prime_time_location(schedule_data_needed_cols)
 
 # Proprocess and create the necessary columns ----
 schedule_data_needed_cols <- schedule_data_needed_cols %>%
@@ -136,52 +196,8 @@ schedule_data_needed_cols <- schedule_data_needed_cols %>%
          PATIENT_OUT_ROOM_DTTM1 = PATIENT_OUT_ROOM_DTTM + minutes(as.integer(`Avg TAT`)),
          # ThreeHourBlockPart = as.numeric(ProcedureTimeMinutes)/180,
          # Date = as.Date(SURGERY_DATE),
-         `Available Start` = as.character(SURGERY_DATE),
-         `Available End` = as.character(SURGERY_DATE),
-         Weekday = weekdays(SURGERY_DATE),
          DayofMonth = day(SURGERY_DATE),
          WeekofYear = week(SURGERY_DATE),
-         `Available Start` =  ifelse(str_detect(HOSPITAL, pattern = "MSH") & Weekday!='Wednesday',
-                                     paste(as.character(SURGERY_DATE), '8:00:00'),
-                                     ifelse(str_detect(HOSPITAL, pattern = "MSM") & Weekday=='Wednesday',
-                                            paste(as.character(SURGERY_DATE), '7:30:00'),
-                                            ifelse(str_detect(HOSPITAL, pattern = "MSM") & Weekday!='Wednesday',
-                                                   paste(as.character(SURGERY_DATE), '8:30:00'), 
-                                                   ifelse((str_detect(HOSPITAL, pattern = "MSDC") | str_detect(HOSPITAL, pattern = "MSDUS") |  str_detect(HOSPITAL, pattern = "MSW")) & Weekday=='Wednesday',
-                                                          paste(as.character(SURGERY_DATE), '8:30:00'),
-                                                          ifelse((str_detect(HOSPITAL, pattern = "MSDC") | str_detect(HOSPITAL, pattern = "MSDUS") |  str_detect(HOSPITAL, pattern = "MSW")) & Weekday!='Wednesday',
-                                                                 paste(as.character(SURGERY_DATE), '7:30:00'),
-                                                                 ifelse(str_detect(HOSPITAL, pattern = "MSQ"),
-                                                                        paste(as.character(SURGERY_DATE), '8:00:00'),
-                                                                        ifelse(str_detect(HOSPITAL, pattern = "MSB"),
-                                                                               paste(as.character(SURGERY_DATE), '8:00:00'),
-                                                                               ifelse(str_detect(HOSPITAL, pattern = "MSH") & Weekday=='Wednesday',
-                                                                                      paste(as.character(SURGERY_DATE), '9:00:00'),NA)
-                                                                        )
-                                                                 )
-                                                          )
-                                                   )
-                                            )
-                                     )
-         ),
-         `Available End` = ifelse(str_detect(HOSPITAL, pattern = "MSH") & Weekday!='Wednesday',
-                                  paste(as.character(SURGERY_DATE), '18:00:00'),
-                                  ifelse(str_detect(HOSPITAL, pattern = "MSM") & Weekday=='Wednesday',
-                                         paste(as.character(SURGERY_DATE), '17:30:00'),
-                                         ifelse(str_detect(HOSPITAL, pattern = "MSM") & Weekday!='Wednesday',
-                                                paste(as.character(SURGERY_DATE), '17:30:00'), 
-                                                ifelse((str_detect(HOSPITAL, pattern = "MSDC") | str_detect(HOSPITAL, pattern = "MSDUS") |  str_detect(HOSPITAL, pattern = "MSW")) & Weekday=='Wednesday',
-                                                       paste(as.character(SURGERY_DATE), '17:30:00'),
-                                                       ifelse((str_detect(HOSPITAL, pattern = "MSDC") | str_detect(HOSPITAL, pattern = "MSDUS") |  str_detect(HOSPITAL, pattern = "MSW")) & Weekday!='Wednesday',
-                                                              paste(as.character(SURGERY_DATE), '17:30:00'), 
-                                                              ifelse(str_detect(HOSPITAL, pattern = "MSQ"),
-                                                                     paste(as.character(SURGERY_DATE), '18:00:00'), 
-                                                                     ifelse(str_detect(HOSPITAL, pattern = "MSB"),
-                                                                            paste(as.character(SURGERY_DATE), '15:00:00'),
-                                                                            ifelse(str_detect(HOSPITAL, pattern = "MSH") & Weekday=='Wednesday',
-                                                                                   paste(as.character(SURGERY_DATE), '18:00:00'), NA)))))))),
-         `Available Start` =  as.POSIXct(`Available Start`,format='%Y-%m-%d %H:%M:%S',tz = "America/New_York"),
-         `Available End` = as.POSIXct(`Available End`,format='%Y-%m-%d %H:%M:%S',tz = "America/New_York"),
          # TotalAvailableTimeHoursPrimeTime = difftime(`Available End` , `Available Start` ,units = "hours"),
          # TotalAvailableTimeMinutesPrimeTime = difftime(`Available End` , `Available Start` ,units = "mins"),
          PrimeTimeInterval = interval(`Available Start`, `Available End`),
@@ -193,6 +209,27 @@ schedule_data_needed_cols <- schedule_data_needed_cols %>%
 
 
 # Derive Relavent Metrics for Gap Analysis ----
+
+or_location_map <- schedule_data_needed_cols %>%
+  distinct(HOSPITAL,`OR Room`, OR_ID) %>%
+  drop_na()
+
+# Derive Capacity for ORs not used on days of year
+schedule_data_needed_cols_no_use_days <- schedule_data_needed_cols %>%
+  group_by(HOSPITAL,SURGERY_DATE,OR_ID) %>%
+  summarise(NumberofCases = n()) %>%
+  ungroup() %>%
+  filter(!is.na(OR_ID)) %>%
+  complete(nesting(HOSPITAL,OR_ID), SURGERY_DATE = seq(min(SURGERY_DATE), max(SURGERY_DATE), by = "day")) %>%
+  filter(is.na(NumberofCases))
+
+schedule_data_needed_cols_no_use_days <- prime_time_location(schedule_data_needed_cols_no_use_days)
+
+schedule_data_needed_cols_no_use_days <- schedule_data_needed_cols_no_use_days %>%
+  mutate( PrimeTimeInterval = interval(`Available Start`, `Available End`),
+          RecoverableMinutesNoUse = as.numeric(int_length(PrimeTimeInterval))/60) %>%
+  filter(!Weekday %in% c("Saturday","Sunday")) %>%
+  select(HOSPITAL,SURGERY_DATE,OR_ID,RecoverableMinutesNoUse)
 
 schedule_data_needed_cols_gaps <- schedule_data_needed_cols %>%
   filter(!is.na(overlap_primetime_procedure)) %>%
@@ -217,6 +254,7 @@ schedule_data_needed_cols_gaps <- schedule_data_needed_cols %>%
          `Latest Case End`) %>%
   mutate(GapTime = (PATIENT_IN_ROOM_DTTM - `Previous Patient Out`)/60,
          GapTime = ifelse(GapTime >= 0, GapTime,0),
+         `GapTimeContinuousBlock (> 180 Min)` = ifelse(GapTime >= 180, GapTime,0),
          RecoverableDuringStart = (`Earliest Case Start` - `Available Start`)/60,
          RecoverableDuringStart = ifelse(RecoverableDuringStart >= 0, RecoverableDuringStart,0),
          RecoverableDuringEnd = (`Available End` - `Latest Case End`)/60,
@@ -224,11 +262,12 @@ schedule_data_needed_cols_gaps <- schedule_data_needed_cols %>%
 
 
 
-
 # Total Gap Minutes ----
 gap_minutes <- schedule_data_needed_cols_gaps %>%
   group_by(HOSPITAL,OR_ID,SURGERY_DATE) %>%
-  summarise(GapTimeTotal = sum(GapTime))
+  summarise(GapTimeTotal = sum(GapTime),
+            `GapTimeContinuousBlock (> 180 Min)` = sum(`GapTimeContinuousBlock (> 180 Min)`),
+            Cases = n()+1)
 
 
 # Total Recoverable at Start Minutes ----
@@ -248,9 +287,27 @@ recoverable_end_minutes <- schedule_data_needed_cols_gaps %>%
 
 # Total Recoverable Minutes ----
 # Combine all three above
-recoverable_minutes <- left_join(left_join(gap_minutes,recoverable_start_minutes),recoverable_end_minutes) %>%
-  mutate(TotalRecoverableMinutes = GapTimeTotal+RecoverableDuringStartTotal+RecoverableDuringEndTotal)
+recoverable_minutes <-   rbind(left_join(left_join(gap_minutes,recoverable_start_minutes),
+                                             recoverable_end_minutes),
+                                   schedule_data_needed_cols_no_use_days) %>%
+  replace(is.na(.), 0) %>%
+  mutate(RecoverableMinutesNoUse = ifelse(is.na(RecoverableMinutesNoUse),0, RecoverableMinutesNoUse),
+         TotalRecoverableMinutes = GapTimeTotal+RecoverableDuringStartTotal+RecoverableDuringEndTotal+RecoverableMinutesNoUse,
+         Weekday = weekdays(SURGERY_DATE),
+         RecoverableBlocks = as.integer(TotalRecoverableMinutes/225))%>%
+  select(HOSPITAL,
+         OR_ID, 
+         SURGERY_DATE, 
+         Weekday,
+         GapTimeTotal,
+         Cases,
+         `GapTimeContinuousBlock (> 180 Min)`,
+         RecoverableDuringStartTotal,
+         RecoverableDuringEndTotal,
+         RecoverableMinutesNoUse,
+         RecoverableBlocks)
 
+write_xlsx(recoverable_minutes,"BlockAnalysis.xlsx")
 
 recoverable_minutes_hospital <- recoverable_minutes %>%
   group_by(HOSPITAL,SURGERY_DATE) %>%
@@ -258,7 +315,7 @@ recoverable_minutes_hospital <- recoverable_minutes %>%
   ungroup() %>%
   mutate(Weekday = weekdays(SURGERY_DATE),
          TotalRecoverableBlocks = as.integer(TotalRecoverableMinutes/225) ) %>% # 3 Hour 45 Minutes
-  filter(!Weekday %in% c("Saturday", "Sunday")) 
+  filter(!Weekday %in% c("Saturday", "Sunday"))  
 
 
 
@@ -397,10 +454,10 @@ MSQ <- get_plot("MSQ")
 MSW <- get_plot("MSW")
 
 
-ggsave("MSB_MSBI_with_TAT_recoverable.png",MSB | MSBI)
+ggsave("MSB_MSBI_with_TAT_recoverable.png",MSB | MSBI,width = 2705, height = 1709, units = "px")
 # ggsave("MSBI_with_TAT.pdf",MSBI)
 # ggsave("MSH_with_TAT.pdf",MSH)
 # ggsave("MSM_with_TAT.pdf",MSM)
-ggsave("MSH_MSM_with_TAT_recoverable.png",MSH|MSM)
-ggsave("MSQ_MSW_with_TAT_recoverable.png",MSQ | MSW)
+ggsave("MSH_MSM_with_TAT_recoverable.png",MSH|MSM,width = 2705, height = 1709, units = "px")
+ggsave("MSQ_MSW_with_TAT_recoverable.png",MSQ | MSW,width = 2705, height = 1709, units = "px")
 
