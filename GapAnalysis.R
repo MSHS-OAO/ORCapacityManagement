@@ -29,6 +29,12 @@ library(here)
 library(hms)
 library(ggplot2)
 library(patchwork)
+library(grid)
+# library(ggnewscale)
+library(ggtext)
+library(tidyverse)
+library(shadowtext)
+
 # library(ggh4x) # for x axis
 
 
@@ -47,11 +53,17 @@ current_date <- Sys.Date()
 # sched_date <- '2024-09-01'
 sched_date <- as.character(current_date - months(13))
 status <- 'Completed'
-query <- glue("SELECT * 
-              FROM {source_table_name} 
-              WHERE SURGERY_DATE >=TO_DATE('{sched_date}','YYYY-MM-DD') AND 
+query <- glue("SELECT *
+              FROM {source_table_name}
+              WHERE SURGERY_DATE >=TO_DATE('{sched_date}','YYYY-MM-DD') AND
               CASE_STATUS = '{status}' AND
-              FACILITY not like '%IR%' AND FACILITY not like '%L&D%';") 
+              FACILITY not like '%IR%' AND FACILITY not like '%L&D%';")
+
+# query <- glue("SELECT * 
+#               FROM {source_table_name} 
+#               WHERE SURGERY_DATE >=TO_DATE('{sched_date}','YYYY-MM-DD') AND 
+#               CASE_STATUS = '{status}';") 
+
 schedule_data <- dbGetQuery(conn, query)
 dbDisconnect(conn)
 
@@ -112,11 +124,13 @@ schedule_data_needed_cols <- schedule_data %>%
          PATIENT_IN_ROOM_DTTM,
          PATIENT_OUT_ROOM_DTTM,
          MINUTES_IN_ROOM_TO_OUT_ROOM,
-         SURGERY_DATE) 
+         SURGERY_DATE,
+         TURNOVER_FROM_PRIOR_CASE) 
 
 
 
-
+# schedule_data_needed_cols <- schedule_data_needed_cols %>%
+#   filter(SURGERY_DATE <= as.Date("2025-09-30"))
 
 schedule_data_needed_cols <- left_join(schedule_data_needed_cols,ClusterInfo,
                                        by = c("OR_CASE_ID" = "OR Case ID"))
@@ -127,7 +141,10 @@ schedule_data_needed_cols <- left_join(schedule_data_needed_cols,TAT_Cluster,
 schedule_data_needed_cols <- left_join(schedule_data_needed_cols,TAT_Hospital,
                                        by = c("FACILITY" = "Location"))
 schedule_data_needed_cols <-  schedule_data_needed_cols %>%
-  mutate(`Avg TAT` = if_else(is.na(`Average of TAT Cluster`),`Average of TAT Location`,`Average of TAT Cluster`))
+  mutate(`Avg TAT` =if_else(is.na(TURNOVER_FROM_PRIOR_CASE),0,TURNOVER_FROM_PRIOR_CASE))
+  # mutate(`Avg TAT` = if_else(is.na(TURNOVER_FROM_PRIOR_CASE),`Average of TAT Location`,TURNOVER_FROM_PRIOR_CASE))
+
+# `Average of TAT Location`
 
 # function to derive Prime Time for Location ----
 
@@ -195,18 +212,41 @@ schedule_data_needed_cols <- schedule_data_needed_cols %>%
          PATIENT_OUT_ROOM_DTTM = force_tz(PATIENT_OUT_ROOM_DTTM,tzone = "America/New_York"),
          PATIENT_OUT_ROOM_DTTM1 = PATIENT_OUT_ROOM_DTTM + minutes(as.integer(`Avg TAT`)),
          # ThreeHourBlockPart = as.numeric(ProcedureTimeMinutes)/180,
-         # Date = as.Date(SURGERY_DATE),
+         Month = month(SURGERY_DATE),
          DayofMonth = day(SURGERY_DATE),
          WeekofYear = week(SURGERY_DATE),
+         Year = year(SURGERY_DATE),
          # TotalAvailableTimeHoursPrimeTime = difftime(`Available End` , `Available Start` ,units = "hours"),
          # TotalAvailableTimeMinutesPrimeTime = difftime(`Available End` , `Available Start` ,units = "mins"),
          PrimeTimeInterval = interval(`Available Start`, `Available End`),
          ProcedureInterval =  interval(PATIENT_IN_ROOM_DTTM,PATIENT_OUT_ROOM_DTTM,tzone = "America/New_York"),
+         SetupTimeInterval =  interval(PATIENT_OUT_ROOM_DTTM,PATIENT_OUT_ROOM_DTTM1,tzone = "America/New_York"),
          overlap_primetime_procedure = intersect(PrimeTimeInterval, ProcedureInterval),
-         overlap_duration_minutes = as.numeric(int_length(overlap_primetime_procedure))/60,
-         overlap_duration_minutes = replace_na(overlap_duration_minutes,0) + 38
+         overlap_primetime_setup = intersect(PrimeTimeInterval, SetupTimeInterval),
+         overlap_duration_seconds = as.duration(overlap_primetime_procedure),
+         overlap_duration_seconds = if_else(is.na(overlap_duration_seconds),0,as.numeric(overlap_duration_seconds)),
+         overlap_setup_seconds = as.duration(overlap_primetime_setup),
+         overlap_setup_seconds = if_else(is.na(overlap_setup_seconds),0,as.numeric(overlap_setup_seconds))
+         #overlap_setup_seconds = if_else(overlap_primetime_setup > 60*60*60,60*60*60,as.numeric(overlap_primetime_setup))
+         
+         # overlap_duration_minutes = as.numeric(overlap_duration_seconds,units ="minutes")
   )
 
+# Validation ----
+validation <- schedule_data_needed_cols %>%
+  group_by(Month,Year) %>%
+  summarise(`# Cases` = n(),
+            PrimeTimeMinutes = sum(overlap_duration_seconds,na.rm = TRUE)/3600,
+            PrimeTimeTAT = sum(overlap_setup_seconds,na.rm = TRUE)/3600)
+
+validation_tat <- schedule_data_needed_cols %>%
+  filter(`Avg TAT`!=0) %>%
+  group_by(Month,Year) %>%
+  summarise(`# Cases` = n(),
+            AvgTAT = mean(overlap_setup_seconds)/60)
+
+
+write_xlsx(validation,paste0("Files/ValidationResults_", min(schedule_data_needed_cols$SURGERY_DATE),"_",max(schedule_data_needed_cols$SURGERY_DATE),".xlsx"))
 
 # Derive Relavent Metrics for Gap Analysis ----
 
@@ -307,157 +347,116 @@ recoverable_minutes <-   rbind(left_join(left_join(gap_minutes,recoverable_start
          RecoverableMinutesNoUse,
          RecoverableBlocks)
 
-write_xlsx(recoverable_minutes,"BlockAnalysis.xlsx")
-
-recoverable_minutes_hospital <- recoverable_minutes %>%
-  group_by(HOSPITAL,SURGERY_DATE) %>%
-  summarise(TotalRecoverableMinutes = sum(TotalRecoverableMinutes)) %>%
-  ungroup() %>%
-  mutate(Weekday = weekdays(SURGERY_DATE),
-         TotalRecoverableBlocks = as.integer(TotalRecoverableMinutes/225) ) %>% # 3 Hour 45 Minutes
-  filter(!Weekday %in% c("Saturday", "Sunday"))  
+write_xlsx(recoverable_minutes,"Files/BlockAnalysis.xlsx")
 
 
+recoverable_minutes_plots <- recoverable_minutes %>%
+  mutate(MonthYear = floor_date(SURGERY_DATE,unit = "month"))
 
-# Prime Time Utilization --- 
-EffectivePrimeTimeMinutes <- schedule_data_needed_cols %>%
-  select(HOSPITAL,
-         Weekday,
-         `Available Start`,
-         `Available End`) %>% 
-  mutate(`Available Start` = format(`Available Start`, "%H:%M:%S"),
-         `Available End` = format(`Available End`, "%H:%M:%S"),
-         Weekday = factor(Weekday, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))) %>%
-  distinct()
+recoverable_start_180 <- recoverable_minutes_plots %>%
+  filter(RecoverableDuringStartTotal >= 180) %>%
+  group_by(HOSPITAL,MonthYear) %>%
+  summarise(ReoverableBlocksStart = n())
 
-EffectivePrimeTimeMinutesKeepAllOpen <- left_join(EffectivePrimeTimeMinutes,
-                                                  ORSchedulesKeepAllOpenPrimeTime %>%
-                                                    select(Location,
-                                                           `# ORs`,
-                                                           `Time Start`,
-                                                           `Time End`),
-                                                  by =  c("HOSPITAL" = "Location")) %>%
-  mutate(`Time Start` = as.POSIXct(format(as.POSIXct(`Time Start`,format = "%I:%M:%S %p"),format="%H:%M:%S"),format="%H:%M:%S"),
-         `Time End` = as.POSIXct(format(as.POSIXct(`Time End`,format = "%I:%M:%S %p"),format="%H:%M:%S"),format="%H:%M:%S"),
-         `Available Start` = as.POSIXct(`Available Start`,format = "%H:%M:%S"),
-         `Available End` = as.POSIXct(`Available End`,format = "%H:%M:%S"),
-         PrimeTime = interval(`Available Start`, `Available End`),
-         Cascade = interval(`Time Start`, `Time End`),
-         overlap_interval = intersect(PrimeTime, Cascade),
-         overlap_duration_minutes = as.numeric(int_length(overlap_interval))/60,
-         overlap_duration_minutes = ifelse(is.na(overlap_duration_minutes),0,overlap_duration_minutes),
-         TotalAvailableTimeMinutesPrimeTimeKeepAllOpen = overlap_duration_minutes*`# ORs` ) %>%
-  select(HOSPITAL,
-         Weekday,
-         TotalAvailableTimeMinutesPrimeTimeKeepAllOpen) %>%
-  distinct() %>%
-  group_by(HOSPITAL,
-           Weekday) %>%
-  summarise(TotalAvailableTimeMinutesPrimeTimeKeepAllOpen = sum(TotalAvailableTimeMinutesPrimeTimeKeepAllOpen))
+recoverable_end_180 <- recoverable_minutes_plots %>%
+  filter(RecoverableDuringEndTotal >= 180) %>%
+  group_by(HOSPITAL,MonthYear) %>%
+  summarise(ReoverableBlocksEnd = n())
 
-EffectivePrimeTimeMinutes <- left_join(EffectivePrimeTimeMinutes,
-                                       ORSchedules %>%
-                                         select(Location,
-                                                `# ORs`,
-                                                `Time Start`,
-                                                `Time End`),
-                                       by =  c("HOSPITAL" = "Location")) %>%
-  mutate(`Time Start` = as.POSIXct(format(as.POSIXct(`Time Start`,format = "%I:%M:%S %p"),format="%H:%M:%S"),format="%H:%M:%S"),
-         `Time End` = as.POSIXct(format(as.POSIXct(`Time End`,format = "%I:%M:%S %p"),format="%H:%M:%S"),format="%H:%M:%S"),
-         `Available Start` = as.POSIXct(`Available Start`,format = "%H:%M:%S"),
-         `Available End` = as.POSIXct(`Available End`,format = "%H:%M:%S"),
-         PrimeTime = interval(`Available Start`, `Available End`),
-         Cascade = interval(`Time Start`, `Time End`),
-         overlap_interval = intersect(PrimeTime, Cascade),
-         overlap_duration_minutes = as.numeric(int_length(overlap_interval))/60,
-         overlap_duration_minutes = ifelse(is.na(overlap_duration_minutes),0,overlap_duration_minutes),
-         TotalAvailableTimeMinutesPrimeTimeCascadeOverlap = overlap_duration_minutes*`# ORs` )
+recoverable_blocks_180 <- recoverable_minutes_plots %>%
+  filter(`GapTimeContinuousBlock (> 180 Min)` >= 180) %>%
+  group_by(HOSPITAL,MonthYear) %>%
+  summarise(ReoverableBlocks = n())
+
+recoverable_no_use_hosp <- recoverable_minutes_plots %>%
+  filter(RecoverableMinutesNoUse != 0) %>%
+  group_by(HOSPITAL,MonthYear) %>%
+  summarise(ReoverableNoUse = n())
 
 
-EffectivePrimeTimeMinutesV1 <- EffectivePrimeTimeMinutes %>%
-  select(HOSPITAL,
-         Weekday,
-         TotalAvailableTimeMinutesPrimeTimeCascadeOverlap) %>%
-  distinct() %>%
-  group_by(HOSPITAL,
-           Weekday) %>%
-  summarise(TotalAvailableTimeMinutesPrimeTimeCascadeOverlap = sum(TotalAvailableTimeMinutesPrimeTimeCascadeOverlap))
+recoverable_blocks_plots <- left_join(left_join(left_join(recoverable_blocks_180,recoverable_end_180),recoverable_start_180),recoverable_no_use_hosp)
+recoverable_blocks_plots <- recoverable_blocks_plots %>%
+  pivot_longer(cols = ReoverableBlocks:ReoverableNoUse,
+               names_to = "Recoverable Type",
+               values_to = "Value") %>%
+  mutate(`Recoverable Type` = ifelse(str_detect(`Recoverable Type`,"Start"),"# 3 Hr Blocks Before First Case",
+                                     ifelse(str_detect(`Recoverable Type`,"End"),"# 3 Hr Blocks After Last Case",
+                                            ifelse(str_detect(`Recoverable Type`,"NoUse"),"# Unused","# 3 Hr Blocks Between Cases")))) %>%
+  filter(HOSPITAL!="MSBI")
 
+recoverable_blocks_plots_unused <- recoverable_blocks_plots %>%
+  filter(`Recoverable Type` == "# Unused")
 
-summary_used <- schedule_data_needed_cols %>%
-  group_by(HOSPITAL,
-           Weekday,
-           DayofMonth,
-           WeekofYear,
-           SURGERY_DATE)%>%
-  summarise(ProcessTimeMin = sum(overlap_duration_minutes))
+recoverable_blocks_plots <- recoverable_blocks_plots %>%
+  filter(`Recoverable Type`!= "# Unused")
 
+# plots ----
 
-summary_used_prime_time <-  left_join(summary_used,
-                                      EffectivePrimeTimeMinutesV1) %>%
-  mutate(UtilizationNormalizedPrimeTimeCascade = ProcessTimeMin/as.numeric(TotalAvailableTimeMinutesPrimeTimeCascadeOverlap))%>%
-  drop_na() %>%
-  mutate(Weekday = factor(Weekday, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))) %>%
-  filter(!Weekday %in% c("Saturday", "Sunday"))
-
-summary_used_prime_time <-  left_join(summary_used_prime_time,
-                                      EffectivePrimeTimeMinutesKeepAllOpen) %>%
-  mutate(UtilizationNormalizedPrimeTimeAllOpen = ProcessTimeMin/as.numeric(TotalAvailableTimeMinutesPrimeTimeKeepAllOpen)) %>%
-  filter(!Weekday %in% c("Saturday", "Sunday")) 
-
-
-summary_used_prime_time <- left_join(summary_used_prime_time,
-                                     recoverable_minutes_hospital %>% select(HOSPITAL,
-                                                                             SURGERY_DATE, 
-                                                                             Weekday, 
-                                                                             TotalRecoverableBlocks)) %>%
-  mutate(ProcessTimeMinThreeHourBlocks = ProcessTimeMin + TotalRecoverableBlocks*225,
-         UtilizationNormalizedPrimeTimeCascadeRecoverable = ProcessTimeMinThreeHourBlocks/as.numeric(TotalAvailableTimeMinutesPrimeTimeCascadeOverlap),
-         UtilizationNormalizedPrimeTimeAllOpenRecoverable = ProcessTimeMinThreeHourBlocks/as.numeric(TotalAvailableTimeMinutesPrimeTimeKeepAllOpen))
-  
-summary_used_prime_time  <- summary_used_prime_time %>%
-  select(HOSPITAL, Weekday, SURGERY_DATE, UtilizationNormalizedPrimeTimeCascade,UtilizationNormalizedPrimeTimeAllOpen, UtilizationNormalizedPrimeTimeAllOpenRecoverable)%>%
-  pivot_longer( cols = c(`UtilizationNormalizedPrimeTimeCascade`, `UtilizationNormalizedPrimeTimeAllOpen`,UtilizationNormalizedPrimeTimeAllOpenRecoverable),
-                names_to = "AllOpenvsCascadevsRecoverable",
-                values_to = "Utilization") %>%
-  mutate(AllOpenvsCascadevsRecoverable = ifelse(str_detect(AllOpenvsCascadevsRecoverable, pattern = "Recoverable"),"All Open Recoverable",ifelse(str_detect(AllOpenvsCascadevsRecoverable, pattern = "Cascade"),"Cascade", "All Rooms Open")))%>%
-  mutate(Weekday = factor(Weekday, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")))
-
-
-get_plot <- function(SITE){
-  plot_box <- ggplot(summary_used_prime_time %>% filter(HOSPITAL == SITE), aes(y = AllOpenvsCascadevsRecoverable, x = Utilization,fill = AllOpenvsCascadevsRecoverable)) +
-    geom_boxplot(varwidth = TRUE,colour = "#221F72",outlier.alpha = 0.4,notch = TRUE) +
-    scale_fill_manual(values = rep('#00AEFF', each = 3)) +
-    labs(title =  SITE, x = "Prime Time Utilization (TAT Incl)",y = NULL) + 
-    theme(legend.position = "none") +    
-    # theme_bw() +
-    theme(
-      plot.background = element_blank(),
-      panel.grid.major = element_blank(),
-      panel.grid.minor = element_blank(),
-      panel.border = element_blank(),
-      strip.text.y = element_text(
-        size = 5,
-        color = "#221F72"
-      )
+plot_blocks <- function(Site){
+  plt <- ggplot(recoverable_blocks_plots %>% filter(HOSPITAL ==Site), aes(MonthYear, Value)) +
+    geom_line(aes(color = `Recoverable Type`), size = 2.4) +
+    geom_point(
+      aes(fill = `Recoverable Type`), 
+      size = 5, 
+      pch = 21, # Type of point that allows us to have both color (border) and fill.
+      color = "white", 
+      stroke = 1 # The width of the border, i.e. stroke.
     ) +
-    # xlim(0, 0.6) +
-    facet_grid(rows = vars(Weekday),scales = "free") +
-    geom_vline(xintercept = 0.75, linetype = "dashed", color = "red")
+    # Set values for the color and the fill
+    scale_color_manual(values = c("#221F72", "#00AEFF", "#D80B8C", "#7F7F7F")) +
+    scale_fill_manual(values = c("#221F72", "#00AEFF", "#D80B8C", "#7F7F7F")) + 
+    # Do not include any legend
+    labs(title =  Site ,x="Month/Year", y="# Recoverable Blocks") +
+    theme(
+      # Set background color to white
+      panel.background = element_rect(fill = "white"),
+      # Remove all grid lines
+      panel.grid = element_blank(),
+    )  
+  # facet_wrap(vars(HOSPITAL))
+  
+  plt
+  
 }
 
-MSB <- get_plot("MSB")
-MSBI <- get_plot("MSBI")
-MSH <- get_plot("MSH")
-MSM <- get_plot("MSM")
-MSQ <- get_plot("MSQ")
-MSW <- get_plot("MSW")
+
+MSB <- plot_blocks("MSB")
+MSH <- plot_blocks("MSH")
+MSM <- plot_blocks("MSM")
+MSQ <- plot_blocks("MSQ")
+MSW <- plot_blocks("MSW")
 
 
-ggsave("MSB_MSBI_with_TAT_recoverable.png",MSB | MSBI,width = 2705, height = 1709, units = "px")
+ggsave("MSB_recoverable.png",MSB,width = 2705, height = 1709, units = "px")
 # ggsave("MSBI_with_TAT.pdf",MSBI)
 # ggsave("MSH_with_TAT.pdf",MSH)
 # ggsave("MSM_with_TAT.pdf",MSM)
-ggsave("MSH_MSM_with_TAT_recoverable.png",MSH|MSM,width = 2705, height = 1709, units = "px")
-ggsave("MSQ_MSW_with_TAT_recoverable.png",MSQ | MSW,width = 2705, height = 1709, units = "px")
+ggsave("MSH_MSM_recoverable.png",MSH|MSM,width = 2705, height = 1709, units = "px")
+ggsave("MSW_MSQ_recoverable.png",MSW|MSQ,width = 2705, height = 1709, units = "px")
+
+
+plt_unused <- ggplot(recoverable_blocks_plots_unused , aes(MonthYear, Value)) +
+  geom_line(aes(color = HOSPITAL), size = 2.4) +
+  geom_point(
+    aes(fill = HOSPITAL), 
+    size = 5, 
+    pch = 21, # Type of point that allows us to have both color (border) and fill.
+    color = "white", 
+    stroke = 1 # The width of the border, i.e. stroke.
+  ) +
+  # Set values for the color and the fill
+  scale_color_manual(values = c("#06ABEB", "#DC298D", "#212070", "#00002D","#808080")) +
+  scale_fill_manual(values = c("#06ABEB", "#DC298D", "#212070", "#00002D","#808080")) +
+  # Do not include any legend
+  labs(title =  "Unused Blocks by Site" ,x="Month/Year", y="# Unused Blocks") +
+  theme(
+    # Set background color to white
+    panel.background = element_rect(fill = "white"),
+    # Remove all grid lines
+    panel.grid = element_blank(),
+  )  
+# facet_wrap(vars(HOSPITAL))
+
+
+ggsave("UnusedBlocks.png",plt_unused,width = 2705, height = 1709, units = "px")
 
