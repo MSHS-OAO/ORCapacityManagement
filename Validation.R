@@ -213,6 +213,7 @@ pt_cleanup_setup_minutes <- schedule_data %>%
   left_join(room_schedules_data, by = c("ROOM_ID" = "ROOM_ID", 
                                         "SURGERY_DATE" = "SNAPSHOT_DATE")) %>%
   select(OR_CASE_ID,
+         ROOM_ID,
          LOCATION_NAME,
          SURGERY_DATE,
          ABSOLUTE_SLOT_START,
@@ -223,14 +224,14 @@ pt_cleanup_setup_minutes <- schedule_data %>%
   distinct()%>%
   ungroup() %>%
   mutate(CleanUpStart = PATIENT_OUT_ROOM_DTTM,
-         CleanUpEnd = PATIENT_OUT_ROOM_DTTM + minutes(as.integer(`Avg TAT`)),
+         CleanUpEnd = PATIENT_OUT_ROOM_DTTM + minutes(as.integer(`Setup + Clean Up Time`)),
          PrimeTime = interval(ABSOLUTE_SLOT_START, ABSOLUTE_SLOT_END),
          CleanupTime = interval(CleanUpStart, CleanUpEnd),
-         PrimeTimeCleanupTimeInterval = intersect(PrimeTime, ProcedureTime),
-         PrimeTimeCleanupTime = as.numeric(int_length(PrimeTimeProcedureTimeInterval))/60,
+         PrimeTimeCleanupTimeInterval = intersect(PrimeTime, CleanupTime),
+         PrimeTimeCleanupTime = as.numeric(int_length(PrimeTimeCleanupTimeInterval))/60,
          Weekday = weekdays(SURGERY_DATE)) %>%
   group_by(LOCATION_NAME,Weekday) %>%
-  summarise(`Prime Time Procedure Time` = sum(PrimeTimeProcedureTime,na.rm = TRUE)/60)%>%
-  mutate(`Prime Time Procedure Time Location` = round(cumsum(`Prime Time Procedure Time`), digits = 0),
-         `Prime Time Procedure Time` = round(`Prime Time Procedure Time`, digits = 0))
+  summarise(`Prime Time CleanUp + Setup Time` = sum(PrimeTimeCleanupTime,na.rm = TRUE)/60)%>%
+  mutate(`Prime Time CleanUp + Setup Time Location` = round(cumsum(`Prime Time CleanUp + Setup Time`), digits = 0),
+         `Prime Time CleanUp + Setup Time` = round(`Prime Time CleanUp + Setup Time`, digits = 0))
 
