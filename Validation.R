@@ -57,8 +57,8 @@ utlization_calculation_table <- 'MS_INSIGHT.OR_QUALITY_ROOM_UTIL_V'
 
 # current_date <- Sys.Date()
 # sched_date <- '2024-09-01'
-sched_start_date <- '2026-02-01'
-sched_end_date <- '2026-02-28'
+sched_start_date <- '2026-03-01'
+sched_end_date <- '2026-03-31'
 status <- 'Completed'
 room_exclusion_list <- "('MSW OR 23','MSM OR 08','MSM OR 15')"
 
@@ -124,7 +124,7 @@ query <- glue("
 
 room_schedules <- glue("
                        SELECT LOG_ID AS OR_CASE_ID,
-                              ROOM_ID
+                              ROOM_ID,
                               SNAPSHOT_DATE,
                               ABSOLUTE_SLOT_START,
                               ABSOLUTE_SLOT_END
@@ -142,3 +142,10 @@ room_schedules <- glue("
 schedule_data <- dbGetQuery(conn, query)
 room_schedules_data <- dbGetQuery(conn,room_schedules)
 dbDisconnect(conn)
+
+
+# Volume Validation ----
+volume <- schedule_data %>%
+  # mutate(Weekday = weekdays(SURGERY_DATE)) %>%
+  group_by(LOCATION_NAME) %>%
+  summarise(Cases = n_distinct(OR_CASE_ID))
