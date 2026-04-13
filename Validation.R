@@ -209,7 +209,8 @@ pt_procedure_minutes <- schedule_data %>%
 pt_cleanup_setup_minutes <- schedule_data %>%
   group_by(ROOM_ID, SURGERY_DATE) %>%
   arrange(PATIENT_IN_ROOM_DTTM) %>%
-  mutate(`Setup + Clean Up Time` = lag(`Avg TAT`)) %>%
+  mutate(`Setup + Clean Up Time` = lag(`Avg TAT`),
+         `Setup + Clean Up Time` = if_else(is.na(`Setup + Clean Up Time`),0,`Setup + Clean Up Time`)) %>%
   left_join(room_schedules_data, by = c("ROOM_ID" = "ROOM_ID", 
                                         "SURGERY_DATE" = "SNAPSHOT_DATE")) %>%
   select(OR_CASE_ID,
@@ -230,8 +231,8 @@ pt_cleanup_setup_minutes <- schedule_data %>%
          PrimeTimeCleanupTimeInterval = intersect(PrimeTime, CleanupTime),
          PrimeTimeCleanupTime = as.numeric(int_length(PrimeTimeCleanupTimeInterval))/60,
          Weekday = weekdays(SURGERY_DATE)) %>%
+  drop_na(PrimeTime)%>%
   group_by(LOCATION_NAME,Weekday) %>%
   summarise(`Prime Time CleanUp + Setup Time` = sum(PrimeTimeCleanupTime,na.rm = TRUE)/60)%>%
   mutate(`Prime Time CleanUp + Setup Time Location` = round(cumsum(`Prime Time CleanUp + Setup Time`), digits = 0),
          `Prime Time CleanUp + Setup Time` = round(`Prime Time CleanUp + Setup Time`, digits = 0))
-
