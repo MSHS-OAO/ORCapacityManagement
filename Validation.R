@@ -34,18 +34,15 @@ library(grid)
 library(ggtext)
 library(tidyverse)
 library(shadowtext)
-library(bizdays)
 
 # library(magick)
 
 # library(ggh4x) # for x axis
 
-
-
-
-recastTimezone.POSIXct <- function(x, tz) return(
-  as.POSIXct(as.character(x), origin = as.POSIXct("1970-01-01"), tz = tz))
-
+# source functions ----
+functions_path <- "./functions/"
+function_file_list <- list.files(path = functions_path, pattern = "\\.[Rr]$", full.names = TRUE)
+lapply(function_file_list, source)
 
 # Establish DB Connection and Get data ----
 dsn <- "OAO Cloud DB Production"
@@ -152,7 +149,9 @@ schedule_data <- schedule_data %>%
 
 room_schedules_data <- room_schedules_data %>%
   mutate(ABSOLUTE_SLOT_START = force_tz(ABSOLUTE_SLOT_START,tzone = "America/New_York"),
-         ABSOLUTE_SLOT_END = force_tz(ABSOLUTE_SLOT_END,tzone = "America/New_York"))
+         ABSOLUTE_SLOT_END = force_tz(ABSOLUTE_SLOT_END,tzone = "America/New_York")) %>%
+  rename(SURGERY_DATE = SNAPSHOT_DATE,
+         LOCATION_NAME = LOC_NAME)
 
 # Volume Validation ----
 volume <- schedule_data %>%
@@ -165,15 +164,15 @@ volume <- schedule_data %>%
 # Available Minutes Validation ----
 available_minutes <- room_schedules_data %>%
   select(ROOM_ID,
-         LOC_NAME,
-         SNAPSHOT_DATE,
+         LOCATION_NAME,
+         SURGERY_DATE,
          ABSOLUTE_SLOT_START,
          ABSOLUTE_SLOT_END) %>%
   distinct() %>%
   mutate(PrimeTime = interval(ABSOLUTE_SLOT_START, ABSOLUTE_SLOT_END),
          PrimeTimeMinutes = as.numeric(int_length(PrimeTime))/60,
-         Weekday = weekdays(SNAPSHOT_DATE)) %>%
-  group_by(LOC_NAME,Weekday) %>%
+         Weekday = weekdays(SURGERY_DATE)) %>%
+  group_by(LOCATION_NAME,Weekday) %>%
   summarise(`Available Time` = sum(PrimeTimeMinutes,na.rm = TRUE)/60) %>%
   mutate(`Prime Time Procedure Time Location` = round(cumsum(`Available Time`), digits = 0),
          `Available Time` = round(`Available Time`, digits = 0))
@@ -182,8 +181,7 @@ available_minutes <- room_schedules_data %>%
 # PrimeTime Procedure Minutes Validation ----
 
 pt_procedure_minutes <- schedule_data %>%
-  left_join(room_schedules_data, by = c("ROOM_ID" = "ROOM_ID", 
-                                   "SURGERY_DATE" = "SNAPSHOT_DATE")) %>%
+  left_join(room_schedules_data) %>%
   select(OR_CASE_ID,
          LOCATION_NAME,
          SURGERY_DATE,
@@ -208,7 +206,7 @@ pt_procedure_minutes <- schedule_data %>%
 
 pt_cleanup_setup_minutes <- schedule_data %>%
   group_by(ROOM_ID, SURGERY_DATE) %>%
-  arrange(PATIENT_IN_ROOM_DTTM) %>%
+  arrange(PATIENT_IN_ROOM_DTTM,by_group = TRUE) %>%
   mutate(`Setup + Clean Up Time` = lag(`Avg TAT`),
          `Setup + Clean Up Time` = if_else(is.na(`Setup + Clean Up Time`),0,`Setup + Clean Up Time`)) %>%
   left_join(room_schedules_data, by = c("ROOM_ID" = "ROOM_ID", 
