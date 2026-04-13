@@ -123,8 +123,8 @@ query <- glue("
 
 
 room_schedules <- glue("
-                       SELECT LOG_ID AS OR_CASE_ID,
-                              ROOM_ID,
+                       SELECT DISTINCT  ROOM_ID,
+                              LOC_NAME,
                               SNAPSHOT_DATE,
                               ABSOLUTE_SLOT_START,
                               ABSOLUTE_SLOT_END
@@ -134,7 +134,8 @@ room_schedules <- glue("
                        TEMPLATE_TIME.SNAPSHOT_DATE <= TO_DATE('{sched_end_date}','YYYY-MM-DD') AND
                        TEMPLATE_TIME.WEEKEND_YN = 'N' AND
                        TEMPLATE_TIME.HOLIDAY_YN = 'N' AND
-                       SLOT_TYPE = 'BLOCK';
+                       SLOT_TYPE = 'BLOCK' AND
+                       PROV_NAME NOT IN {room_exclusion_list};
                        ")
               
 
@@ -144,8 +145,92 @@ room_schedules_data <- dbGetQuery(conn,room_schedules)
 dbDisconnect(conn)
 
 
+schedule_data <- schedule_data %>%
+  mutate(PATIENT_IN_ROOM_DTTM = force_tz(PATIENT_IN_ROOM_DTTM,tzone = "America/New_York"),
+         PATIENT_OUT_ROOM_DTTM = force_tz(PATIENT_OUT_ROOM_DTTM,tzone = "America/New_York"),
+         `Avg TAT` =if_else(is.na(TURNOVER_FROM_PRIOR_CASE),0,TURNOVER_FROM_PRIOR_CASE))
+
+room_schedules_data <- room_schedules_data %>%
+  mutate(ABSOLUTE_SLOT_START = force_tz(ABSOLUTE_SLOT_START,tzone = "America/New_York"),
+         ABSOLUTE_SLOT_END = force_tz(ABSOLUTE_SLOT_END,tzone = "America/New_York"))
+
 # Volume Validation ----
 volume <- schedule_data %>%
-  # mutate(Weekday = weekdays(SURGERY_DATE)) %>%
-  group_by(LOCATION_NAME) %>%
-  summarise(Cases = n_distinct(OR_CASE_ID))
+  mutate(Weekday = weekdays(SURGERY_DATE)) %>%
+  group_by(LOCATION_NAME,Weekday) %>%
+  summarise(Cases = n_distinct(OR_CASE_ID)) %>%
+  mutate(VolumeLocation = cumsum(Cases))
+
+
+# Available Minutes Validation ----
+available_minutes <- room_schedules_data %>%
+  select(ROOM_ID,
+         LOC_NAME,
+         SNAPSHOT_DATE,
+         ABSOLUTE_SLOT_START,
+         ABSOLUTE_SLOT_END) %>%
+  distinct() %>%
+  mutate(PrimeTime = interval(ABSOLUTE_SLOT_START, ABSOLUTE_SLOT_END),
+         PrimeTimeMinutes = as.numeric(int_length(PrimeTime))/60,
+         Weekday = weekdays(SNAPSHOT_DATE)) %>%
+  group_by(LOC_NAME,Weekday) %>%
+  summarise(`Available Time` = sum(PrimeTimeMinutes,na.rm = TRUE)/60) %>%
+  mutate(`Prime Time Procedure Time Location` = round(cumsum(`Available Time`), digits = 0),
+         `Available Time` = round(`Available Time`, digits = 0))
+         
+
+# PrimeTime Procedure Minutes Validation ----
+
+pt_procedure_minutes <- schedule_data %>%
+  left_join(room_schedules_data, by = c("ROOM_ID" = "ROOM_ID", 
+                                   "SURGERY_DATE" = "SNAPSHOT_DATE")) %>%
+  select(OR_CASE_ID,
+         LOCATION_NAME,
+         SURGERY_DATE,
+         ABSOLUTE_SLOT_START,
+         ABSOLUTE_SLOT_END,
+         PATIENT_IN_ROOM_DTTM,
+         PATIENT_OUT_ROOM_DTTM) %>%
+  distinct()%>%
+  mutate(PrimeTime = interval(ABSOLUTE_SLOT_START, ABSOLUTE_SLOT_END),
+         ProcedureTime = interval(PATIENT_IN_ROOM_DTTM, PATIENT_OUT_ROOM_DTTM),
+         PrimeTimeProcedureTimeInterval = intersect(PrimeTime, ProcedureTime),
+         PrimeTimeProcedureTime = as.numeric(int_length(PrimeTimeProcedureTimeInterval))/60,
+         Weekday = weekdays(SURGERY_DATE)) %>%
+  group_by(LOCATION_NAME,Weekday) %>%
+  summarise(`Prime Time Procedure Time` = sum(PrimeTimeProcedureTime,na.rm = TRUE)/60)%>%
+  mutate(`Prime Time Procedure Time Location` = round(cumsum(`Prime Time Procedure Time`), digits = 0),
+         `Prime Time Procedure Time` = round(`Prime Time Procedure Time`, digits = 0))
+
+
+
+# PrimeTime Setup and Cleanup Minutes Validation ----
+
+pt_cleanup_setup_minutes <- schedule_data %>%
+  group_by(ROOM_ID, SURGERY_DATE) %>%
+  arrange(PATIENT_IN_ROOM_DTTM) %>%
+  mutate(`Setup + Clean Up Time` = lag(`Avg TAT`)) %>%
+  left_join(room_schedules_data, by = c("ROOM_ID" = "ROOM_ID", 
+                                        "SURGERY_DATE" = "SNAPSHOT_DATE")) %>%
+  select(OR_CASE_ID,
+         LOCATION_NAME,
+         SURGERY_DATE,
+         ABSOLUTE_SLOT_START,
+         ABSOLUTE_SLOT_END,
+         PATIENT_IN_ROOM_DTTM,
+         PATIENT_OUT_ROOM_DTTM,
+         `Setup + Clean Up Time`) %>%
+  distinct()%>%
+  ungroup() %>%
+  mutate(CleanUpStart = PATIENT_OUT_ROOM_DTTM,
+         CleanUpEnd = PATIENT_OUT_ROOM_DTTM + minutes(as.integer(`Avg TAT`)),
+         PrimeTime = interval(ABSOLUTE_SLOT_START, ABSOLUTE_SLOT_END),
+         CleanupTime = interval(CleanUpStart, CleanUpEnd),
+         PrimeTimeCleanupTimeInterval = intersect(PrimeTime, ProcedureTime),
+         PrimeTimeCleanupTime = as.numeric(int_length(PrimeTimeProcedureTimeInterval))/60,
+         Weekday = weekdays(SURGERY_DATE)) %>%
+  group_by(LOCATION_NAME,Weekday) %>%
+  summarise(`Prime Time Procedure Time` = sum(PrimeTimeProcedureTime,na.rm = TRUE)/60)%>%
+  mutate(`Prime Time Procedure Time Location` = round(cumsum(`Prime Time Procedure Time`), digits = 0),
+         `Prime Time Procedure Time` = round(`Prime Time Procedure Time`, digits = 0))
+
